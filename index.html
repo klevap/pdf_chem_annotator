@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Chemical Annotator</title>
+    <style>
+        :root {
+            --primary-color: #3498db; --secondary-color: #2ecc71; --tertiary-color: #f39c12;
+            --danger-color: #e74c3c; --light-gray: #f4f7f9; --dark-gray: #333; --border-color: #ccc;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0; padding: 10px; background-color: var(--light-gray); color: var(--dark-gray);
+        }
+        .container { max-width: 1800px; margin: 0 auto; padding: 15px; background-color: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.1); border-radius: 8px; }
+        .top-controls { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 2px solid #e0e0e0; margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }
+        .file-ops, .mode-switcher { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .btn { padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; transition: background-color 0.3s; }
+        .btn-primary { background-color: var(--primary-color); color: white; } .btn-primary:hover { background-color: #2980b9; }
+        .btn-secondary { background-color: var(--secondary-color); color: white; } .btn-secondary:hover { background-color: #27ae60; }
+        .btn-tertiary { background-color: var(--tertiary-color); color: white; } .btn-tertiary:hover { background-color: #d35400; }
+        .btn-danger { background-color: var(--danger-color); color: white; } .btn-danger:hover { background-color: #c0392b; }
+        .btn-small { padding: 4px 8px; font-size: 12px; }
+        .btn:disabled { background-color: #bdc3c7; cursor: not-allowed; }
+
+        /* --- Edit Mode --- */
+        #edit-mode-container { display: flex; gap: 20px; }
+        .pdf-viewer { flex: 2; border: 1px solid var(--border-color); padding: 10px; }
+        .pdf-nav { display: flex; justify-content: center; align-items: center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap; }
+        .page-input { width: 60px; text-align: center; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; }
+        .page-render-wrapper { position: relative; margin: 0 auto; }
+        .textLayer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; opacity: 0.5; line-height: 1.0; }
+        .textLayer > span { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+        
+        .annotations-panel { flex: 1; border: 1px solid var(--border-color); padding: 20px; }
+        .annotation-panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .annotation-panel-header h3 { margin: 0; font-size: 1.1em; }
+        .annotation-form { display: flex; flex-direction: column; gap: 10px; }
+        .annotation-form input { padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; }
+        #annotations-list { max-height: 65vh; overflow-y: auto; }
+        .annotation-item { border: 1px solid #e0e0e0; border-radius: 5px; padding: 15px; margin-bottom: 10px; background-color: #fff; }
+        .annotation-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .annotation-item-header h4 { margin: 0; color: #2980b9; }
+        .annotation-item-controls { display: flex; gap: 5px; }
+        .annotation-item p { margin: 5px 0; word-break: break-all; }
+        .structure-svg svg { width: 100%; height: auto; }
+
+        /* --- View Mode --- */
+        #view-mode-container { display: none; }
+        .page-container { display: flex; gap: 15px; margin-bottom: 25px; padding-bottom: 25px; border-bottom: 2px dashed var(--border-color); }
+        .page-container:last-child { border-bottom: none; }
+        .pdf-render-target { flex: 2; }
+        .view-mode-annotations { flex: 1; }
+        .view-mode-annotations h3 { margin-top: 0; }
+        .annotations-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+        .compact-annotation { font-size: 0.9em; border: 1px solid #e8e8e8; padding: 10px; border-radius: 4px; }
+        .compact-annotation h4 { margin: 0 0 2px 0; line-height: 1.2; }
+        .compact-annotation p { margin: 2px 0; line-height: 1.2; }
+        .compact-annotation .structure-svg svg { max-width: 200px; margin-top: 5px; }
+        .smiles-copy { cursor: pointer; font-family: monospace; background-color: #eee; padding: 2px 4px; border-radius: 3px; }
+        .smiles-copy:hover { background-color: #ddd; }
+
+        #loader { font-size: 1.2em; text-align: center; padding: 20px; }
+
+        /* --- Mobile Responsiveness --- */
+        @media (max-width: 992px) {
+            body { padding: 5px; }
+            .top-controls, #edit-mode-container, .page-container { flex-direction: column; }
+            .annotations-panel { width: 100%; box-sizing: border-box; }
+            .annotations-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+    <!-- PDF.js & RDKit.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    <script src="https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="top-controls">
+            <div class="file-ops">
+                <input type="file" id="pdf-file" accept=".pdf">
+                <button id="load-json-btn" class="btn btn-tertiary" disabled>Load JSON</button>
+                <input type="file" id="json-file-input" accept=".json" style="display: none;">
+                <button id="save-json-btn" class="btn btn-secondary" disabled>Save JSON</button>
+            </div>
+            <div class="mode-switcher">
+                <strong>Mode:</strong>
+                <label><input type="radio" name="mode" value="edit" checked> Edit</label>
+                <label><input type="radio" name="mode" value="view"> View</label>
+            </div>
+        </div>
+        <div id="loader">Waiting for RDKit.js to load...</div>
+        <div id="edit-mode-container" style="display: none;">
+            <div class="pdf-viewer">
+                <div class="pdf-nav">
+                    <button id="prev-page" class="btn btn-primary">&lt; Prev</button>
+                    <span>Page: <span id="page-num"></span> / <span id="page-count"></span></span>
+                    <input type="number" id="page-input" class="page-input" min="1">
+                    <button id="go-to-page-btn" class="btn btn-primary btn-small">Go</button>
+                    <button id="next-page" class="btn btn-primary">Next &gt;</button>
+                </div>
+                <div id="edit-page-render-target" class="page-render-wrapper"></div>
+            </div>
+            <div class="annotations-panel">
+                <div class="annotation-panel-header">
+                    <h3>Annotations for page <span id="annotation-page-num"></span></h3>
+                    <div id="form-buttons">
+                        <button id="add-update-btn" class="btn btn-primary">Add Molecule</button>
+                        <button id="cancel-edit-btn" class="btn btn-danger" style="display: none;">Cancel</button>
+                    </div>
+                </div>
+                <div class="annotation-form">
+                    <input type="text" id="name-en" placeholder="Name (EN), e.g., Benzene">
+                    <input type="text" id="name-ru" placeholder="Name (RU), e.g., Бензол">
+                    <input type="text" id="smiles" placeholder="SMILES, e.g., c1ccccc1">
+                    <input type="text" id="cid" placeholder="PubChem CID, e.g., 241">
+                </div>
+                <div id="annotations-list"></div>
+            </div>
+        </div>
+        <div id="view-mode-container"></div>
+    </div>
+
+    <script>
+        // --- Global State ---
+        let pdfDoc = null;          // The loaded PDF document object from PDF.js
+        let pageNum = 1;            // Current page number being viewed/edited
+        let rdkit = null;           // The RDKit module instance
+        let annotations = {};       // Main object to store all annotations, keyed by page number
+        let currentMode = 'edit';   // Tracks the current UI mode ('edit' or 'view')
+        let viewModeRendered = false; // Flag to avoid re-rendering all pages in view mode unnecessarily
+        let editingIndex = null;    // Index of the annotation being edited, or null if none
+        const scale = 1.5;          // Scale for rendering PDF pages
+
+        // --- DOM Element References ---
+        const loader = document.getElementById('loader');
+        const editModeContainer = document.getElementById('edit-mode-container');
+        const viewModeContainer = document.getElementById('view-mode-container');
+        const saveBtn = document.getElementById('save-json-btn');
+        const loadBtn = document.getElementById('load-json-btn');
+        const jsonFileInput = document.getElementById('json-file-input');
+        const addUpdateBtn = document.getElementById('add-update-btn');
+        const cancelEditBtn = document.getElementById('cancel-edit-btn');
+        const annotationsList = document.getElementById('annotations-list');
+        const pageInput = document.getElementById('page-input');
+        const goToPageBtn = document.getElementById('go-to-page-btn');
+
+        // --- Initialization ---
+        // Load the RDKit module. This is an asynchronous operation.
+        window.initRDKitModule().then(function (RDKit) {
+            rdkit = RDKit;
+            console.log("RDKit version: " + RDKit.version());
+            loader.textContent = "Please select a PDF file to begin.";
+        }).catch(function () {
+            loader.textContent = "Error loading RDKit.js. Please check your internet connection.";
+        });
+
+        // --- PDF Rendering Logic ---
+
+        /**
+         * Renders a single PDF page to a target container, including a selectable text layer.
+         * @param {number} num The page number to render.
+         * @param {HTMLElement} targetContainer The container element to render into.
+         */
+        async function renderPage(num, targetContainer) {
+            const page = await pdfDoc.getPage(num);
+            const viewport = page.getViewport({ scale: scale });
+
+            // Prepare canvas and text layer elements
+            targetContainer.innerHTML = '';
+            const canvas = document.createElement('canvas');
+            const textLayerDiv = document.createElement('div');
+            textLayerDiv.className = 'textLayer';
+            
+            // Set dimensions for the wrapper to contain both canvas and text layer
+            targetContainer.style.width = `${viewport.width}px`;
+            targetContainer.style.height = `${viewport.height}px`;
+            targetContainer.appendChild(canvas);
+            targetContainer.appendChild(textLayerDiv);
+
+            // Render the page content to the canvas
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            // Render the text layer for selection and copying
+            const textContent = await page.getTextContent();
+            pdfjsLib.renderTextLayer({
+                textContent: textContent,
+                container: textLayerDiv,
+                viewport: viewport,
+                textDivs: []
+            });
+        }
+
+        /**
+         * Renders all pages of the PDF document sequentially for the 'View' mode.
+         */
+        async function renderAllPages() {
+            if (viewModeRendered) {
+                return; // Avoid re-rendering if already done
+            }
+            loader.style.display = 'block';
+            viewModeContainer.innerHTML = '';
+
+            for (let i = 1; i <= pdfDoc.numPages; i++) {
+                loader.textContent = `Rendering pages (${i}/${pdfDoc.numPages})...`;
+                
+                // Create a container for each page and its annotations
+                const pageContainer = document.createElement('div');
+                pageContainer.className = 'page-container';
+                const renderTarget = document.createElement('div');
+                renderTarget.className = 'pdf-render-target page-render-wrapper';
+                const annotationsTarget = document.createElement('div');
+                annotationsTarget.className = 'view-mode-annotations';
+
+                pageContainer.appendChild(renderTarget);
+                pageContainer.appendChild(annotationsTarget);
+                viewModeContainer.appendChild(pageContainer);
+
+                await renderPage(i, renderTarget);
+                displayAnnotationsForPage(i, annotationsTarget, 'compact');
+            }
+            viewModeRendered = true;
+            loader.style.display = 'none';
+        }
+
+        // --- Annotation Management ---
+
+        /**
+         * Displays annotations for a given page in the specified container and mode.
+         * @param {number} num The page number.
+         * @param {HTMLElement} container The element to display annotations in.
+         * @param {string} displayMode 'full' for edit mode, 'compact' for view mode.
+         */
+        function displayAnnotationsForPage(num, container, displayMode = 'full') {
+            container.innerHTML = '';
+            const pageAnnotations = annotations[num] || [];
+
+            if (displayMode === 'compact') {
+                container.innerHTML = `<h3>Page ${num}</h3>`;
+            }
+
+            if (pageAnnotations.length === 0) {
+                container.innerHTML += '<p>No annotations for this page.</p>';
+                return;
+            }
+            
+            const annotationsContainer = (displayMode === 'compact') ? document.createElement('div') : container;
+            if (displayMode === 'compact') {
+                annotationsContainer.className = 'annotations-grid';
+            }
+
+            pageAnnotations.forEach((item, index) => {
+                const mol = rdkit.get_mol(item.smiles);
+                if (!mol) return; // Skip if SMILES is invalid
+
+                const svg = mol.get_svg();
+                mol.delete(); // IMPORTANT: Free up memory used by the RDKit molecule object
+
+                const wikiLink = `https://en.wikipedia.org/wiki/${encodeURIComponent(item.name_en.replace(/ /g, '_'))}`;
+                const pubchemLink = `https://pubchem.ncbi.nlm.nih.gov/compound/${item.cid}`;
+                const itemDiv = document.createElement('div');
+                
+                if (displayMode === 'full') {
+                    itemDiv.className = 'annotation-item';
+                    itemDiv.innerHTML = `
+                        <div class="annotation-item-header">
+                            <h4><a href="${wikiLink}" target="_blank">${item.name_en}</a></h4>
+                            <div class="annotation-item-controls">
+                                <button class="btn btn-small btn-primary btn-edit" data-index="${index}">Edit</button>
+                                <button class="btn btn-small btn-danger btn-delete" data-index="${index}">Delete</button>
+                            </div>
+                        </div>
+                        <p><strong>RU:</strong> ${item.name_ru || ''}</p>
+                        <p><strong>SMILES:</strong> ${item.smiles}</p>
+                        <p><strong>PubChem:</strong> <a href="${pubchemLink}" target="_blank">${item.cid}</a></p>
+                        <div class="structure-svg">${svg}</div>`;
+                } else { // compact mode
+                    itemDiv.className = 'compact-annotation';
+                    itemDiv.innerHTML = `
+                        <h4><a href="${wikiLink}" target="_blank">${item.name_en}</a> (${item.name_ru || ''})</h4>
+                        <p><strong>SMILES:</strong> <span class="smiles-copy" title="Click to copy">${item.smiles}</span></p>
+                        <p><strong>PubChem:</strong> <a href="${pubchemLink}" target="_blank">${item.cid}</a></p>
+                        <div class="structure-svg">${svg}</div>`;
+                }
+                annotationsContainer.appendChild(itemDiv);
+            });
+
+            if (displayMode === 'compact') {
+                container.appendChild(annotationsContainer);
+            }
+        }
+
+        /**
+         * Handles the logic for both adding a new molecule and updating an existing one.
+         */
+        function handleAddOrUpdateMolecule() {
+            if (!rdkit) {
+                alert("RDKit is not loaded yet.");
+                return;
+            }
+
+            // 1. Get and validate form inputs
+            const name_en = document.getElementById('name-en').value.trim();
+            const smiles = document.getElementById('smiles').value.trim();
+            const cid = document.getElementById('cid').value.trim();
+            if (!name_en || !smiles || !cid) {
+                alert("Please fill in Name (EN), SMILES, and PubChem CID fields.");
+                return;
+            }
+
+            // 2. Validate SMILES string using RDKit
+            const mol = rdkit.get_mol(smiles);
+            if (!mol) {
+                alert("Invalid SMILES string.");
+                return;
+            }
+            mol.delete(); // Free memory
+
+            // 3. Create annotation object
+            const newAnnotation = {
+                name_en: name_en,
+                name_ru: document.getElementById('name-ru').value.trim(),
+                smiles: smiles,
+                cid: cid
+            };
+
+            // 4. Check if we are updating or adding
+            if (editingIndex !== null) {
+                // Update existing annotation
+                annotations[pageNum][editingIndex] = newAnnotation;
+            } else {
+                // Add new annotation
+                if (!annotations[pageNum]) {
+                    annotations[pageNum] = [];
+                }
+                annotations[pageNum].push(newAnnotation);
+            }
+            
+            // 5. Reset form and update UI
+            resetForm();
+            displayAnnotationsForPage(pageNum, annotationsList, 'full');
+            viewModeRendered = false; // Invalidate view mode cache
+        }
+
+        /**
+         * Resets the annotation form to its default state.
+         */
+        function resetForm() {
+            document.getElementById('name-en').value = '';
+            document.getElementById('name-ru').value = '';
+            document.getElementById('smiles').value = '';
+            document.getElementById('cid').value = '';
+            
+            editingIndex = null;
+            addUpdateBtn.textContent = 'Add Molecule';
+            addUpdateBtn.className = 'btn btn-primary';
+            cancelEditBtn.style.display = 'none';
+        }
+
+        /**
+         * Handles clicks on 'Edit' and 'Delete' buttons using event delegation.
+         */
+        function handleAnnotationActions(event) {
+            const target = event.target;
+
+            // Handle 'Edit' button click
+            if (target.classList.contains('btn-edit')) {
+                editingIndex = parseInt(target.dataset.index, 10);
+                const item = annotations[pageNum][editingIndex];
+                
+                // Populate form with existing data
+                document.getElementById('name-en').value = item.name_en;
+                document.getElementById('name-ru').value = item.name_ru;
+                document.getElementById('smiles').value = item.smiles;
+                document.getElementById('cid').value = item.cid;
+                
+                // Switch form to 'update' mode
+                addUpdateBtn.textContent = 'Update Molecule';
+                addUpdateBtn.className = 'btn btn-secondary';
+                cancelEditBtn.style.display = 'inline-block';
+                document.getElementById('name-en').focus();
+            } 
+            // Handle 'Delete' button click
+            else if (target.classList.contains('btn-delete')) {
+                const index = parseInt(target.dataset.index, 10);
+                const itemToDelete = annotations[pageNum][index];
+                if (confirm(`Are you sure you want to delete "${itemToDelete.name_en}"?`)) {
+                    annotations[pageNum].splice(index, 1);
+                    displayAnnotationsForPage(pageNum, annotationsList, 'full');
+                    viewModeRendered = false; // Invalidate view mode cache
+                }
+            }
+        }
+
+        /**
+         * Handles clicks on SMILES strings in view mode to copy them to the clipboard.
+         */
+        function handleSmilesCopy(event) {
+            const target = event.target;
+            if (target.classList.contains('smiles-copy')) {
+                navigator.clipboard.writeText(target.textContent).then(() => {
+                    const originalText = target.innerHTML;
+                    target.textContent = 'Copied!';
+                    setTimeout(() => { target.innerHTML = originalText; }, 1000);
+                }).catch(err => {
+                    console.error('Failed to copy SMILES: ', err);
+                });
+            }
+        }
+
+        // --- File I/O ---
+
+        /**
+         * Saves the current annotations object to a JSON file and triggers a download.
+         */
+        function handleSaveAndDownload() {
+            if (Object.keys(annotations).length === 0) {
+                alert("No annotations to save.");
+                return;
+            }
+            const jsonString = JSON.stringify(annotations, null, 2); // Pretty-print JSON
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'annotations.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url); // Free up memory
+        }
+
+        /**
+         * Loads annotations from a user-selected JSON file.
+         */
+        function handleLoadJson(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const loadedData = JSON.parse(e.target.result);
+                    // Basic validation to ensure it's an object
+                    if (typeof loadedData !== 'object' || loadedData === null || Array.isArray(loadedData)) {
+                        throw new Error("JSON file content must be an object.");
+                    }
+                    annotations = loadedData;
+                    viewModeRendered = false;
+                    alert('Annotations loaded successfully!');
+                    // Refresh the current view with the new data
+                    if (currentMode === 'edit') {
+                        updateEditModeUI();
+                    } else {
+                        renderAllPages();
+                    }
+                } catch (error) {
+                    alert(`Error: Could not parse JSON file. ${error.message}`);
+                }
+            };
+            reader.readAsText(file);
+            // Reset the input value to allow loading the same file again
+            event.target.value = null;
+        }
+
+        // --- UI Navigation & Control ---
+
+        /**
+         * Central function to update all UI elements in the 'Edit' mode.
+         */
+        function updateEditModeUI() {
+            document.getElementById('page-num').textContent = pageNum;
+            document.getElementById('annotation-page-num').textContent = pageNum;
+            pageInput.value = pageNum;
+            renderPage(pageNum, document.getElementById('edit-page-render-target'));
+            displayAnnotationsForPage(pageNum, annotationsList, 'full');
+        }
+
+        /**
+         * Navigates to the page number specified in the input field.
+         */
+        function goToPage() {
+            const targetPage = parseInt(pageInput.value, 10);
+            if (!isNaN(targetPage) && targetPage >= 1 && targetPage <= pdfDoc.numPages) {
+                pageNum = targetPage;
+                updateEditModeUI();
+            } else {
+                alert(`Please enter a valid page number between 1 and ${pdfDoc.numPages}.`);
+                pageInput.value = pageNum; // Reset to current page number
+            }
+        }
+
+        /**
+         * Navigates to the previous page.
+         */
+        function onPrevPage() {
+            if (pageNum > 1) {
+                pageNum--;
+                updateEditModeUI();
+            }
+        }
+
+        /**
+         * Navigates to the next page.
+         */
+        function onNextPage() {
+            if (pageNum < pdfDoc.numPages) {
+                pageNum++;
+                updateEditModeUI();
+            }
+        }
+
+        /**
+         * Switches the UI between 'edit' and 'view' modes.
+         */
+        function switchMode(newMode) {
+            currentMode = newMode;
+            if (newMode === 'edit') {
+                viewModeContainer.style.display = 'none';
+                if (pdfDoc) {
+                    editModeContainer.style.display = 'flex';
+                    updateEditModeUI();
+                }
+            } else { // view mode
+                editModeContainer.style.display = 'none';
+                if (pdfDoc) {
+                    viewModeContainer.style.display = 'block';
+                    renderAllPages();
+                }
+            }
+        }
+
+        // --- Event Listeners ---
+
+        // Handles PDF file selection
+        document.getElementById('pdf-file').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (!file || file.type !== 'application/pdf') return;
+
+            loader.style.display = 'block';
+            loader.textContent = 'Loading PDF...';
+
+            const fileReader = new FileReader();
+            fileReader.onload = function() {
+                const typedarray = new Uint8Array(this.result);
+                pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js`;
+                
+                pdfjsLib.getDocument(typedarray).promise.then(function(pdfDoc_) {
+                    pdfDoc = pdfDoc_;
+                    
+                    // Reset application state for the new document
+                    document.getElementById('page-count').textContent = pdfDoc.numPages;
+                    pageInput.max = pdfDoc.numPages;
+                    pageNum = 1;
+                    annotations = {};
+                    viewModeRendered = false;
+                    saveBtn.disabled = false;
+                    loadBtn.disabled = false;
+                    loader.style.display = 'none';
+                    
+                    // Switch to the default edit mode view
+                    switchMode('edit');
+                });
+            };
+            fileReader.readAsArrayBuffer(file);
+        });
+
+        // Handles mode switching (Edit/View)
+        document.querySelectorAll('input[name="mode"]').forEach(radio => {
+            radio.addEventListener('change', (e) => switchMode(e.target.value));
+        });
+
+        // General UI actions
+        loadBtn.addEventListener('click', () => jsonFileInput.click());
+        jsonFileInput.addEventListener('change', handleLoadJson);
+        saveBtn.addEventListener('click', handleSaveAndDownload);
+        
+        // Edit mode navigation and actions
+        document.getElementById('prev-page').addEventListener('click', onPrevPage);
+        document.getElementById('next-page').addEventListener('click', onNextPage);
+        goToPageBtn.addEventListener('click', goToPage);
+        pageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') goToPage(); });
+        addUpdateBtn.addEventListener('click', handleAddOrUpdateMolecule);
+        cancelEditBtn.addEventListener('click', resetForm);
+        annotationsList.addEventListener('click', handleAnnotationActions);
+        
+        // View mode actions
+        viewModeContainer.addEventListener('click', handleSmilesCopy);
+
+    </script>
+</body>
+</html>
