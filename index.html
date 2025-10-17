@@ -150,7 +150,7 @@
         .page-render-wrapper { position: relative; margin: 0 auto; max-width: 100%; }
         .page-render-wrapper canvas { max-width: 100%; height: auto; display: block; }
         body.dark-theme .page-render-wrapper canvas { filter: invert(0.9) hue-rotate(180deg); }
-        .textLayer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; opacity: 0.5; line-height: 1.0; }
+        .textLayer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; line-height: 1.0; }
         .textLayer > span { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
         .annotations-panel { flex: 2; border: 1px solid var(--border-color); padding: 20px; border-radius: 5px; min-width: 0; }
         .annotation-panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
@@ -331,6 +331,26 @@
         // --- PDF Rendering Logic ---
 
         /**
+         * Updates the scale of the text layer to match the rendered canvas.
+         * This is crucial for responsive text selection.
+         * @param {HTMLElement} container The container holding the canvas and text layer.
+         */
+        function updateTextLayerScale(container) {
+            if (!container._pdfViewport) return;
+
+            const canvas = container.querySelector('canvas');
+            const textLayer = container.querySelector('.textLayer');
+            if (!canvas || !textLayer) return;
+
+            const actualWidth = canvas.clientWidth;
+            const originalWidth = container._pdfViewport.width;
+            const scale = actualWidth / originalWidth;
+
+            textLayer.style.transform = `scale(${scale})`;
+            textLayer.style.transformOrigin = '0 0';
+        }
+
+        /**
          * Renders a single PDF page to a target container, including a selectable text layer.
          * @param {number} num The page number to render.
          * @param {HTMLElement} targetContainer The container element to render into.
@@ -339,32 +359,35 @@
             const page = await pdfDoc.getPage(num);
             const viewport = page.getViewport({ scale: scale });
 
+            // Store the viewport on the container for later scale calculations
+            targetContainer._pdfViewport = viewport;
+
             // Prepare canvas and text layer elements
             targetContainer.innerHTML = '';
             const canvas = document.createElement('canvas');
             const textLayerDiv = document.createElement('div');
             textLayerDiv.className = 'textLayer';
             
-            // Set dimensions for the wrapper to contain both canvas and text layer
             targetContainer.style.width = `${viewport.width}px`;
             targetContainer.style.height = `${viewport.height}px`;
             targetContainer.appendChild(canvas);
             targetContainer.appendChild(textLayerDiv);
 
-            // Render the page content to the canvas
             const context = canvas.getContext('2d');
             canvas.height = viewport.height;
             canvas.width = viewport.width;
             await page.render({ canvasContext: context, viewport }).promise;
 
-            // Render the text layer for selection and copying
             const textContent = await page.getTextContent();
-            pdfjsLib.renderTextLayer({
+            await pdfjsLib.renderTextLayer({
                 textContent: textContent,
                 container: textLayerDiv,
                 viewport: viewport,
                 textDivs: []
-            });
+            }).promise;
+
+            // Update the text layer scale to match the responsive canvas
+            updateTextLayerScale(targetContainer);
         }
 
         /**
@@ -380,7 +403,6 @@
             for (let i = 1; i <= pdfDoc.numPages; i++) {
                 loader.textContent = `Rendering pages (${i}/${pdfDoc.numPages})...`;
                 
-                // Create a container for each page and its annotations
                 const pageContainer = document.createElement('div');
                 pageContainer.className = 'page-container';
                 const renderTarget = document.createElement('div');
@@ -475,7 +497,6 @@
                 return;
             }
 
-            // 1. Get and validate form inputs
             const name_en = document.getElementById('name-en').value.trim();
             const smiles = document.getElementById('smiles').value.trim();
             const cid = document.getElementById('cid').value.trim();
@@ -484,15 +505,13 @@
                 return;
             }
 
-            // 2. Validate SMILES string using RDKit
             const mol = rdkit.get_mol(smiles);
             if (!mol) {
                 alert("Invalid SMILES string.");
                 return;
             }
-            mol.delete(); // Free memory
+            mol.delete();
 
-            // 3. Create annotation object
             const newAnnotation = {
                 name_en: name_en,
                 name_ru: document.getElementById('name-ru').value.trim(),
@@ -500,22 +519,18 @@
                 cid: cid
             };
 
-            // 4. Check if we are updating or adding
             if (editingIndex !== null) {
-                // Update existing annotation
                 annotations[pageNum][editingIndex] = newAnnotation;
             } else {
-                // Add new annotation
                 if (!annotations[pageNum]) {
                     annotations[pageNum] = [];
                 }
                 annotations[pageNum].push(newAnnotation);
             }
             
-            // 5. Reset form and update UI
             resetForm();
             displayAnnotationsForPage(pageNum, annotationsList, 'full');
-            viewModeRendered = false; // Invalidate view mode cache
+            viewModeRendered = false;
         }
 
         /**
@@ -539,31 +554,27 @@
         function handleAnnotationActions(event) {
             const target = event.target;
 
-            // Handle 'Edit' button click
             if (target.classList.contains('btn-edit')) {
                 editingIndex = parseInt(target.dataset.index, 10);
                 const item = annotations[pageNum][editingIndex];
                 
-                // Populate form with existing data
                 document.getElementById('name-en').value = item.name_en;
                 document.getElementById('name-ru').value = item.name_ru;
                 document.getElementById('smiles').value = item.smiles;
                 document.getElementById('cid').value = item.cid;
                 
-                // Switch form to 'update' mode
                 addUpdateBtn.textContent = 'Update Molecule';
                 addUpdateBtn.className = 'btn btn-secondary';
                 cancelEditBtn.style.display = 'inline-block';
                 document.getElementById('name-en').focus();
             } 
-            // Handle 'Delete' button click
             else if (target.classList.contains('btn-delete')) {
                 const index = parseInt(target.dataset.index, 10);
                 const itemToDelete = annotations[pageNum][index];
                 if (confirm(`Are you sure you want to delete "${itemToDelete.name_en}"?`)) {
                     annotations[pageNum].splice(index, 1);
                     displayAnnotationsForPage(pageNum, annotationsList, 'full');
-                    viewModeRendered = false; // Invalidate view mode cache
+                    viewModeRendered = false;
                 }
             }
         }
@@ -586,15 +597,12 @@
 
         // --- File I/O ---
 
-        /**
-         * Saves the current annotations object to a JSON file and triggers a download.
-         */
         function handleSaveAndDownload() {
             if (Object.keys(annotations).length === 0) {
                 alert("No annotations to save.");
                 return;
             }
-            const jsonString = JSON.stringify(annotations, null, 2); // Pretty-print JSON
+            const jsonString = JSON.stringify(annotations, null, 2);
             const blob = new Blob([jsonString], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -603,12 +611,9 @@
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            URL.revokeObjectURL(url); // Free up memory
+            URL.revokeObjectURL(url);
         }
 
-        /**
-         * Loads annotations from a user-selected JSON file.
-         */
         function handleLoadJson(event) {
             const file = event.target.files[0];
             if (!file) return;
@@ -617,14 +622,12 @@
             reader.onload = function(e) {
                 try {
                     const loadedData = JSON.parse(e.target.result);
-                    // Basic validation to ensure it's an object
                     if (typeof loadedData !== 'object' || loadedData === null || Array.isArray(loadedData)) {
                         throw new Error("JSON file content must be an object.");
                     }
                     annotations = loadedData;
                     viewModeRendered = false;
                     alert('Annotations loaded successfully!');
-                    // Refresh the current view with the new data
                     if (currentMode === 'edit') {
                         updateEditModeUI();
                     } else {
@@ -635,15 +638,11 @@
                 }
             };
             reader.readAsText(file);
-            // Reset the input value to allow loading the same file again
             event.target.value = null;
         }
 
         // --- UI Navigation & Control ---
 
-        /**
-         * Central function to update all UI elements in the 'Edit' mode.
-         */
         function updateEditModeUI() {
             document.getElementById('page-num').textContent = pageNum;
             document.getElementById('annotation-page-num').textContent = pageNum;
@@ -652,9 +651,6 @@
             displayAnnotationsForPage(pageNum, annotationsList, 'full');
         }
 
-        /**
-         * Navigates to the page number specified in the input field.
-         */
         function goToPage() {
             const targetPage = parseInt(pageInput.value, 10);
             if (!isNaN(targetPage) && targetPage >= 1 && targetPage <= pdfDoc.numPages) {
@@ -662,13 +658,10 @@
                 updateEditModeUI();
             } else {
                 alert(`Please enter a valid page number between 1 and ${pdfDoc.numPages}.`);
-                pageInput.value = pageNum; // Reset to current page number
+                pageInput.value = pageNum;
             }
         }
 
-        /**
-         * Navigates to the previous page.
-         */
         function onPrevPage() {
             if (pageNum > 1) {
                 pageNum--;
@@ -676,9 +669,6 @@
             }
         }
 
-        /**
-         * Navigates to the next page.
-         */
         function onNextPage() {
             if (pageNum < pdfDoc.numPages) {
                 pageNum++;
@@ -686,9 +676,6 @@
             }
         }
 
-        /**
-         * Switches the UI between 'edit' and 'view' modes.
-         */
         function switchMode(newMode) {
             currentMode = newMode;
             if (newMode === 'edit') {
@@ -708,7 +695,11 @@
 
         // --- Event Listeners ---
 
-        // Handles PDF file selection
+        // Handles window resize to keep text layer in sync
+        window.addEventListener('resize', () => {
+            document.querySelectorAll('.page-render-wrapper').forEach(updateTextLayerScale);
+        });
+
         document.getElementById('pdf-file').addEventListener('change', function(event) {
             const file = event.target.files[0];
             if (!file || file.type !== 'application/pdf') return;
@@ -724,7 +715,6 @@
                 pdfjsLib.getDocument(typedarray).promise.then(function(pdfDoc_) {
                     pdfDoc = pdfDoc_;
                     
-                    // Reset application state for the new document
                     document.getElementById('page-count').textContent = pdfDoc.numPages;
                     pageInput.max = pdfDoc.numPages;
                     pageNum = 1;
@@ -734,24 +724,20 @@
                     loadBtn.disabled = false;
                     loader.style.display = 'none';
                     
-                    // Switch to the default edit mode view
                     switchMode('edit');
                 });
             };
             fileReader.readAsArrayBuffer(file);
         });
 
-        // Handles mode switching (Edit/View)
         document.querySelectorAll('input[name="mode"]').forEach(radio => {
             radio.addEventListener('change', (e) => switchMode(e.target.value));
         });
 
-        // General UI actions
         loadBtn.addEventListener('click', () => jsonFileInput.click());
         jsonFileInput.addEventListener('change', handleLoadJson);
         saveBtn.addEventListener('click', handleSaveAndDownload);
         
-        // Edit mode navigation and actions
         document.getElementById('prev-page').addEventListener('click', onPrevPage);
         document.getElementById('next-page').addEventListener('click', onNextPage);
         goToPageBtn.addEventListener('click', goToPage);
@@ -760,7 +746,6 @@
         cancelEditBtn.addEventListener('click', resetForm);
         annotationsList.addEventListener('click', handleAnnotationActions);
         
-        // View mode actions
         viewModeContainer.addEventListener('click', handleSmilesCopy);
 
     </script>
